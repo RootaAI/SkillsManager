@@ -13,6 +13,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Find in editor (Ctrl+F).
 - Rename skill (folder rename with the same validation as New Skill).
 - Bilingual UI (English / 中文, following the system language).
+- Retarget to .NET 10 LTS (supported through 2028; .NET 8 LTS support ends
+  November 2026). A one-line framework bump plus CI version update.
+- **2.0 direction: migrate the UI shell to Avalonia** — one move that
+  unlocks three things WinForms cannot deliver: cross-platform builds
+  (Claude Code and Codex users are largely on macOS/Linux, where
+  `~/.claude/skills` and `~/.codex/skills` live), first-class dark mode,
+  and Markdown syntax highlighting via AvaloniaEdit. `SkillsManager.Core`
+  (library resolution, settings, validation, normalization — fully
+  unit-tested) is UI-agnostic by design, so only the thin form layer is
+  rewritten; the trigger to start is real macOS demand, a Markdown
+  preview/highlighting decision, or dark mode becoming a hard requirement.
 
 ## [1.1.0] - 2026-08-25
 
