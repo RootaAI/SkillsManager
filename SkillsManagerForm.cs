@@ -2,30 +2,34 @@
 // Copyright (c) 2026 Roota AI. All rights reserved.
 
 using System.Text;
+using SkillsManager.Core;
 
 namespace SkillsManager
 {
     /// <summary>
-    /// Main window: a notes-style manager for Microsoft Copilot Cowork skills.
+    /// Main window: a notes-style manager for agent skill folders.
     ///
-    /// Cowork skills live as FOLDERS under the user's OneDrive-synced
-    /// Documents\Cowork\Skills; every folder contains one SKILL.md and the
-    /// folder NAME is the skill's identity (the file name is always the same,
-    /// so folders are the only way to tell skills apart).
+    /// A skill is a FOLDER containing one SKILL.md; the folder NAME is the
+    /// skill's identity (the file name is always the same, so folders are the
+    /// only way to tell skills apart). That convention is shared by Microsoft
+    /// Copilot Cowork, Claude Code, and OpenAI Codex, so the manager offers
+    /// each of them as a built-in "library" plus any custom folders the user
+    /// adds — one tool for every skills tree on the machine.
     ///
-    /// Layout: left = filterable list of skill folders; right = the selected
-    /// folder's SKILL.md, directly editable with an explicit Save. "New Skill"
-    /// creates &lt;Skills&gt;\&lt;name&gt;\SKILL.md (folders auto-created,
-    /// including Cowork\Skills itself on first use).
+    /// Layout: left = library picker + filterable list of skill folders;
+    /// right = the selected folder's SKILL.md, directly editable with an
+    /// explicit Save (Ctrl+S). "New Skill" creates &lt;root&gt;\&lt;name&gt;\SKILL.md
+    /// (folders auto-created, including the root itself on first use).
     ///
     /// Deliberately NO delete function: deletion goes through Open Folder →
-    /// Explorer, which uses the Recycle Bin and OneDrive version history -
-    /// safer than any in-app permanent delete.
+    /// Explorer, which uses the Recycle Bin (and OneDrive version history for
+    /// synced roots) - safer than any in-app permanent delete.
     /// </summary>
     internal sealed class SkillsManagerForm : Form
     {
         private const string SkillFileName = "SKILL.md";   // create-name; reads accept any casing
 
+        private readonly ComboBox _libraryCombo;
         private readonly TextBox _filterBox;
         private readonly ListBox _list;
         private readonly TextBox _nameView;
@@ -34,21 +38,27 @@ namespace SkillsManager
         private readonly Button  _saveButton;
         private readonly Label   _statusLabel;
 
-        private readonly string _root;
+        private readonly ISkillsEnvironment _env = new SystemEnvironment();
+        private AppSettings _settings;
+        private IReadOnlyList<SkillLibrary> _libraries;
+        private SkillLibrary _library;             // currently selected library
         private List<string> _skillDirs = new();   // absolute folder paths
         private string? _loadedDir;                // folder whose file is in the editor
+        private DateTime? _loadedWriteTimeUtc;     // file mtime at load, for external-change detection
         private bool _dirty;
         private bool _loading;                     // suppress dirty-tracking during programmatic loads
 
         internal SkillsManagerForm()
         {
-            _root = ResolveSkillsRoot();
+            _settings = SettingsStore.Load();
+            _libraries = LibraryCatalog.All(_env, _settings);
+            _library = _libraries.FirstOrDefault(l => l.Id == _settings.LastLibraryId) ?? _libraries[0];
 
-            Text          = "Copilot Skills Manager (Cowork)";
             StartPosition = FormStartPosition.CenterScreen;
             ClientSize    = new Size(940, 620);
             MinimumSize   = new Size(720, 460);
             BackColor     = Ui.ContentBackground;
+            KeyPreview    = true;                  // route Ctrl+S here before the editor sees it
 
             var split = new SplitContainer
             {
@@ -57,7 +67,9 @@ namespace SkillsManager
             };
             Controls.Add(split);
 
-            // ── Left: filter + skill-folder list ──
+            // ── Left: library picker + filter + skill-folder list ──
+            // Dock order note: WinForms docks the LAST-added control first, so
+            // list (Fill) is added before the Top-docked strips above it.
             _filterBox = new TextBox
             {
                 Dock = DockStyle.Top, Font = Ui.FontStatus, BackColor = Color.White,
@@ -66,8 +78,28 @@ namespace SkillsManager
             _filterBox.TextChanged += (_, _) => RefreshList();
             _list = new ListBox { Dock = DockStyle.Fill, Font = Ui.FontStatus, IntegralHeight = false };
             _list.SelectedIndexChanged += (_, _) => ShowSelected();
+
+            _libraryCombo = new ComboBox
+            {
+                Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, Font = Ui.FontStatus
+            };
+            var manageButton = new Button
+            {
+                Text = "⚙", Dock = DockStyle.Right, Width = 32, FlatStyle = FlatStyle.System,
+                Font = Ui.FontStatus
+            };
+            var tips = new ToolTip();
+            tips.SetToolTip(manageButton, "Manage custom skill libraries");
+            tips.SetToolTip(_libraryCombo, "Skill library: Copilot Cowork, Claude Code, Codex, or your own folders");
+            manageButton.Click += (_, _) => ManageLibraries();
+            var libraryPanel = new Panel { Dock = DockStyle.Top, Height = _libraryCombo.PreferredHeight + 6,
+                                           Padding = new Padding(0, 0, 0, 6) };
+            libraryPanel.Controls.Add(_libraryCombo);
+            libraryPanel.Controls.Add(manageButton);
+
             split.Panel1.Controls.Add(_list);
             split.Panel1.Controls.Add(_filterBox);
+            split.Panel1.Controls.Add(libraryPanel);
             split.Panel1.Padding = new Padding(8, 8, 4, 8);
 
             // Created before the editor below so its TextChanged lambda
@@ -127,13 +159,23 @@ namespace SkillsManager
             Controls.Add(bottom);
 
             _saveButton.Enabled = false;
+            KeyDown += (_, e) =>
+            {
+                if (e.Control && e.KeyCode == Keys.S)
+                {
+                    e.SuppressKeyPress = true;     // stop the editor's ding
+                    if (_saveButton.Enabled) SaveCurrent();
+                }
+            };
             FormClosing += (_, e) =>
             {
                 // Same guard as switching skills: never silently drop edits.
                 if (_dirty && !ConfirmDiscardOrSave()) e.Cancel = true;
             };
 
-            LoadSkills();
+            _libraryCombo.SelectedIndexChanged += (_, _) => OnLibraryPicked();
+            PopulateLibraryCombo();
+            ApplyLibrary();
         }
 
         private static Button MakeButton(string text, EventHandler onClick, DockStyle dock, Font font)
@@ -144,39 +186,128 @@ namespace SkillsManager
             return b;
         }
 
-        // ── Skills root resolution ────────────────────────────────────────────
-        /// <summary>
-        /// The default Cowork skills location is &lt;Documents&gt;\Cowork\Skills on
-        /// the OneDrive-synced Documents folder. SpecialFolder.MyDocuments
-        /// follows OneDrive Known Folder Move automatically, so it is the
-        /// primary candidate; the OneDrive env-var paths cover setups where
-        /// Documents is NOT redirected but the OneDrive folder still hosts a
-        /// Documents tree. First EXISTING candidate wins; when none exists yet
-        /// the primary is used and created on first save/New Skill.
-        /// </summary>
-        internal static string ResolveSkillsRoot()
+        // ── Libraries ─────────────────────────────────────────────────────────
+        private void PopulateLibraryCombo()
         {
-            var candidates = new List<string>();
-            string myDocs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-            if (!string.IsNullOrEmpty(myDocs))
-                candidates.Add(Path.Combine(myDocs, "Cowork", "Skills"));
-            foreach (var env in new[] { "OneDriveCommercial", "OneDrive" })
+            _loading = true;
+            try
             {
-                string? od = Environment.GetEnvironmentVariable(env);
-                if (!string.IsNullOrEmpty(od))
-                {
-                    string p = Path.Combine(od, "Documents", "Cowork", "Skills");
-                    if (!candidates.Contains(p, StringComparer.OrdinalIgnoreCase))
-                        candidates.Add(p);
-                }
+                _libraryCombo.Items.Clear();
+                foreach (var lib in _libraries) _libraryCombo.Items.Add(lib.Name);
+                int idx = _libraries.ToList().FindIndex(l => l.Id == _library.Id);
+                _libraryCombo.SelectedIndex = idx >= 0 ? idx : 0;
             }
-            foreach (var c in candidates)
-                if (Directory.Exists(c)) return c;
-            return candidates.Count > 0
-                ? candidates[0]
-                : Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "SkillsManager", "Cowork", "Skills");
+            finally { _loading = false; }
+        }
+
+        private void OnLibraryPicked()
+        {
+            if (_loading) return;
+            int idx = _libraryCombo.SelectedIndex;
+            if (idx < 0 || idx >= _libraries.Count || _libraries[idx].Id == _library.Id) return;
+
+            // Guard unsaved edits before the whole list is repointed elsewhere.
+            if (_dirty && !ConfirmDiscardOrSave())
+            {
+                _loading = true;
+                _libraryCombo.SelectedIndex = _libraries.ToList().FindIndex(l => l.Id == _library.Id);
+                _loading = false;
+                return;
+            }
+
+            _library = _libraries[idx];
+            _settings.LastLibraryId = _library.Id;
+            TrySaveSettings();
+            ApplyLibrary();
+        }
+
+        private void ApplyLibrary()
+        {
+            Text = $"Skills Manager — {_library.Name}";
+            _filterBox.Text = "";
+            _loadedDir = null;
+            _loadedWriteTimeUtc = null;
+            LoadSkills();
+        }
+
+        /// <summary>Add/remove custom libraries; built-ins are not editable.</summary>
+        private void ManageLibraries()
+        {
+            if (_dirty && !ConfirmDiscardOrSave()) return;
+
+            using var dlg = new Form
+            {
+                Text = "Manage skill libraries",
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterParent,
+                MaximizeBox = false, MinimizeBox = false, ShowInTaskbar = false,
+                ClientSize = new Size(520, 300)
+            };
+            var info = new Label
+            {
+                Text = "Built-in libraries (Copilot Cowork, Claude Code, Codex) are always available.\n" +
+                       "Add any folder that contains one sub-folder per skill with a SKILL.md inside.",
+                Dock = DockStyle.Top, Height = 40, Font = Ui.FontMeta, ForeColor = Color.Gray,
+                Padding = new Padding(10, 6, 10, 0)
+            };
+            var listBox = new ListBox { Dock = DockStyle.Fill, Font = Ui.FontStatus, IntegralHeight = false };
+            void Reload()
+            {
+                listBox.Items.Clear();
+                foreach (var c in _settings.CustomLibraries)
+                    listBox.Items.Add($"{c.Name}  ({c.Path})");
+            }
+            Reload();
+
+            var buttons = new Panel { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(10, 8, 10, 8) };
+            var addButton    = MakeButton("Add folder...", (_, _) =>
+            {
+                using var picker = new FolderBrowserDialog
+                {
+                    Description = "Pick a skills root: it holds one folder per skill, each with a SKILL.md.",
+                    UseDescriptionForTitle = true,
+                    ShowNewFolderButton = true
+                };
+                if (picker.ShowDialog(dlg) != DialogResult.OK) return;
+                string path = picker.SelectedPath;
+                if (_settings.CustomLibraries.Any(c => string.Equals(c.Path, path, StringComparison.OrdinalIgnoreCase)))
+                    return;   // already listed
+                _settings.CustomLibraries.Add(new CustomLibrary { Name = Path.GetFileName(path), Path = path });
+                Reload();
+            }, DockStyle.Left, Ui.FontStatus);
+            var removeButton = MakeButton("Remove", (_, _) =>
+            {
+                int i = listBox.SelectedIndex;
+                if (i < 0) return;
+                _settings.CustomLibraries.RemoveAt(i);
+                Reload();
+            }, DockStyle.Left, Ui.FontStatus);
+            var closeButton  = MakeButton("Close", (_, _) => dlg.Close(), DockStyle.Right, Ui.FontStatus);
+            buttons.Controls.Add(addButton);
+            buttons.Controls.Add(removeButton);
+            buttons.Controls.Add(closeButton);
+
+            dlg.Controls.Add(listBox);
+            dlg.Controls.Add(info);
+            dlg.Controls.Add(buttons);
+            dlg.ShowDialog(this);
+
+            TrySaveSettings();
+            _libraries = LibraryCatalog.All(_env, _settings);
+            if (_libraries.All(l => l.Id != _library.Id))
+            {
+                _library = _libraries[0];          // current custom library was removed
+                _settings.LastLibraryId = _library.Id;
+                TrySaveSettings();
+                ApplyLibrary();
+            }
+            PopulateLibraryCombo();
+        }
+
+        private void TrySaveSettings()
+        {
+            try { SettingsStore.Save(_settings); }
+            catch (Exception ex) { SetStatus("Could not save settings: " + ex.Message, Color.Firebrick); }
         }
 
         /// <summary>Existing skill file in a folder (any casing of skill.md), or the create-path.</summary>
@@ -195,11 +326,12 @@ namespace SkillsManager
         // ── Load / list ───────────────────────────────────────────────────────
         private void LoadSkills(string? selectDir = null)
         {
+            string root = _library.Root;
             _skillDirs = new List<string>();
             try
             {
-                if (Directory.Exists(_root))
-                    _skillDirs = Directory.GetDirectories(_root)
+                if (Directory.Exists(root))
+                    _skillDirs = Directory.GetDirectories(root)
                         .OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
                         .ToList();
             }
@@ -210,12 +342,12 @@ namespace SkillsManager
 
             RefreshList(selectDir);
 
-            if (!Directory.Exists(_root))
-                SetStatus($"Skills folder not found yet - New Skill creates {_root}", Color.Gray);
+            if (!Directory.Exists(root))
+                SetStatus($"Skills folder not found yet - New Skill creates {root}", Color.Gray);
             else if (_skillDirs.Count == 0)
-                SetStatus($"No skill folders in {_root} - New Skill to start.", Color.Gray);
+                SetStatus($"No skill folders in {root} - New Skill to start.", Color.Gray);
             else
-                SetStatus($"{_skillDirs.Count} skill(s) in {_root}", Color.Gray);
+                SetStatus($"{_skillDirs.Count} skill(s) in {root}", Color.Gray);
         }
 
         private List<string> Filtered()
@@ -274,6 +406,7 @@ namespace SkillsManager
             try
             {
                 _loadedDir = dir;
+                _loadedWriteTimeUtc = null;
                 _dirty = false;
                 _saveButton.Enabled = false;
 
@@ -293,8 +426,8 @@ namespace SkillsManager
 
                 if (File.Exists(file))
                 {
-                    _editor.Text = File.ReadAllText(file)
-                        .Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+                    _editor.Text = TextUtil.NormalizeToCrLf(File.ReadAllText(file));
+                    _loadedWriteTimeUtc = File.GetLastWriteTimeUtc(file);
                 }
                 else
                 {
@@ -318,12 +451,36 @@ namespace SkillsManager
             {
                 Directory.CreateDirectory(_loadedDir);
                 string file = SkillFilePath(_loadedDir);
-                // UTF-8 without BOM: SKILL.md is Markdown consumed by Copilot
-                // Cowork - a BOM would be a stray character to some readers.
-                File.WriteAllText(file, _editor.Text.Replace("\r\n", "\n"), new UTF8Encoding(false));
+
+                // External-change guard: the skills tree is often synced
+                // (OneDrive) or edited by agents/other machines. If the file
+                // on disk is newer than what was loaded, saving would silently
+                // destroy that version - ask first.
+                if (File.Exists(file) && _loadedWriteTimeUtc is { } loadedAt
+                    && File.GetLastWriteTimeUtc(file) != loadedAt)
+                {
+                    var overwrite = MessageBox.Show(
+                        $"'{Path.GetFileName(file)}' changed on disk after it was loaded here\n" +
+                        "(synced from another device, or edited by another program).\n\n" +
+                        "Overwrite it with your version? Choosing No keeps both: your text stays\n" +
+                        "in the editor, and Refresh shows the disk version.",
+                        "File changed outside the editor",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+                    if (overwrite != DialogResult.Yes)
+                    {
+                        SetStatus("Not saved - the file on disk is newer. Refresh to view it.", Color.Firebrick);
+                        return;
+                    }
+                }
+
+                // UTF-8 without BOM + LF endings: SKILL.md is Markdown read by
+                // agent runtimes and diffed in git - a BOM would be a stray
+                // character to some readers.
+                File.WriteAllText(file, TextUtil.NormalizeToLf(_editor.Text), new UTF8Encoding(false));
+                _loadedWriteTimeUtc = File.GetLastWriteTimeUtc(file);
                 _dirty = false;
                 _saveButton.Enabled = false;
-                AuditLogger.Log("SKILL-SAVE", Path.GetFileName(_loadedDir));
+                AuditLogger.Log("SKILL-SAVE", $"{_library.Id}:{Path.GetFileName(_loadedDir)}");
                 SetStatus($"Saved {file}", Color.FromArgb(0, 128, 0));
             }
             catch (Exception ex)
@@ -337,19 +494,18 @@ namespace SkillsManager
             if (_dirty && !ConfirmDiscardOrSave()) return;
 
             string? name = PromptForSkillName();
-            if (string.IsNullOrWhiteSpace(name)) return;
+            if (name == null) return;
             name = name.Trim();
 
-            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            if (SkillName.Validate(name) is { } error)
             {
-                MessageBox.Show("The skill name becomes a folder name - it cannot contain \\ / : * ? \" < > |",
-                    "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(error, "New Skill", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             try
             {
-                string dir = Path.Combine(_root, name);
+                string dir = Path.Combine(_library.Root, name);
                 if (Directory.Exists(dir))
                 {
                     // Existing folder: just select it (its file loads).
@@ -360,7 +516,7 @@ namespace SkillsManager
                 Directory.CreateDirectory(dir);
                 string file = Path.Combine(dir, SkillFileName);
                 File.WriteAllText(file, "# " + name + "\n\n", new UTF8Encoding(false));
-                AuditLogger.Log("SKILL-CREATE", name);
+                AuditLogger.Log("SKILL-CREATE", $"{_library.Id}:{name}");
                 LoadSkills(dir);
                 SetStatus($"Created {file}", Color.FromArgb(0, 128, 0));
             }
@@ -385,7 +541,7 @@ namespace SkillsManager
             // and the dialog is sized last.
             var label = new Label
             {
-                Text = "Skill name (becomes the folder name - Copilot recognizes the skill by it):",
+                Text = $"Skill name in '{_library.Name}' (becomes the folder name - the agent recognizes the skill by it):",
                 Left = 14, Top = 12, AutoSize = true, MaximumSize = new Size(392, 0),
                 Font = Ui.FontStatus
             };
@@ -405,11 +561,11 @@ namespace SkillsManager
         {
             try
             {
-                Directory.CreateDirectory(_root);
+                Directory.CreateDirectory(_library.Root);
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = "explorer.exe",
-                    Arguments = $"\"{_root}\"",
+                    Arguments = $"\"{_library.Root}\"",
                     UseShellExecute = true
                 });
             }
@@ -426,7 +582,11 @@ namespace SkillsManager
                 $"Save changes to '{(_loadedDir != null ? Path.GetFileName(_loadedDir) : "")}' first?",
                 "Unsaved changes", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
             if (choice == DialogResult.Cancel) return false;
-            if (choice == DialogResult.Yes) SaveCurrent();
+            if (choice == DialogResult.Yes)
+            {
+                SaveCurrent();
+                if (_dirty) return false;   // save was declined (external change) or failed - stay
+            }
             else { _dirty = false; _saveButton.Enabled = false; }
             return true;
         }
@@ -452,10 +612,7 @@ namespace SkillsManager
                     {
                         if (Clipboard.ContainsText())
                         {
-                            string t = Clipboard.GetText()
-                                .Replace("\r\n", "\n").Replace('\r', '\n')
-                                .Replace("\n", "\r\n");
-                            SelectedText = t;   // replaces the selection like a native paste
+                            SelectedText = TextUtil.NormalizeToCrLf(Clipboard.GetText());
                             return;
                         }
                     }

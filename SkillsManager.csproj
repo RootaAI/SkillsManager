@@ -13,12 +13,16 @@
          when the window is dragged between displays with different scaling. -->
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- Keep in sync with the newest CHANGELOG.md entry. -->
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Authors>Roota AI</Authors>
     <Company>Roota AI</Company>
     <Product>SkillsManager</Product>
-    <Description>A standalone Windows desktop manager for Microsoft Copilot Cowork skills. Built by Roota AI — find us on Rednote (小红书): 若塔AI.</Description>
+    <Description>A standalone Windows desktop manager for agent skills — Microsoft Copilot Cowork, Claude Code, OpenAI Codex, and any custom skills folder. Built by Roota AI — find us on Rednote (小红书): 若塔AI.</Description>
     <Copyright>Copyright (c) 2026 Roota AI</Copyright>
   </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="SkillsManager.Core\SkillsManager.Core.csproj" />
+  </ItemGroup>
 
 </Project>
