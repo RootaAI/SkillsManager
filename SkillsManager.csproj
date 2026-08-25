@@ -14,6 +14,10 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <!-- Keep in sync with the newest CHANGELOG.md entry. -->
     <Version>1.1.0</Version>
+    <!-- Core and its tests are SUBFOLDERS of this repo-root project, so the
+         default **/*.cs glob would compile their sources and obj/ output into
+         the app too (duplicate attributes, missing xunit). -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);SkillsManager.Core/**;SkillsManager.Core.Tests/**</DefaultItemExcludes>
     <Authors>Roota AI</Authors>
     <Company>Roota AI</Company>
     <Product>SkillsManager</Product>
