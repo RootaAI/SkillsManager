@@ -1,0 +1,24 @@
+
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>SkillsManager</AssemblyName>
+    <RootNamespace>SkillsManager</RootNamespace>
+    <!-- PerMonitorV2: each monitor reports its own DPI; the app re-renders
+         when the window is dragged between displays with different scaling. -->
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- Keep in sync with the newest CHANGELOG.md entry. -->
+    <Version>1.0.0</Version>
+    <Authors>Roota AI</Authors>
+    <Company>Roota AI</Company>
+    <Product>SkillsManager</Product>
+    <Description>A standalone Windows desktop manager for Microsoft Copilot Cowork skills. Built by Roota AI — find us on Rednote (小红书): 若塔AI.</Description>
+    <Copyright>Copyright (c) 2026 Roota AI</Copyright>
+  </PropertyGroup>
+
+</Project>
