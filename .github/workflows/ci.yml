@@ -7,6 +7,19 @@ on:
     branches: [main]
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Run Core tests
+        run: dotnet test SkillsManager.Core.Tests -c Release
+
   build:
     runs-on: windows-latest
     steps:
@@ -17,5 +30,8 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
-      - name: Build (Release, warnings as errors)
-        run: dotnet build SkillsManager.csproj -c Release -warnaserror
+      - name: Build solution (Release, warnings as errors)
+        run: dotnet build SkillsManager.sln -c Release -warnaserror
+
+      - name: Run Core tests
+        run: dotnet test SkillsManager.Core.Tests -c Release --no-build
