@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
+- **Prebuilt Windows binaries** — publish a self-contained, single-file
+  `SkillsManager.exe` (no .NET runtime install required) on the GitHub
+  Releases page for non-developer end users, built automatically by CI on
+  each version tag.
+
 - **Configurable skills root** — a setting to point the manager at any
   folder-per-skill tree instead of the fixed Copilot Cowork resolution
   order. The same `<root>\<skill-name>\SKILL.md` convention is used by
