@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Planned
+
+- **Configurable skills root** — a setting to point the manager at any
+  folder-per-skill tree instead of the fixed Copilot Cowork resolution
+  order. The same `<root>\<skill-name>\SKILL.md` convention is used by
+  other agent ecosystems — e.g. Claude Code skills under
+  `~/.claude/skills` — so one setting would make the tool useful beyond
+  Copilot Cowork (managing Copilot and Claude skills side by side).
+
 ## [1.0.0] - 2026-08-25
 
 Initial public release.
